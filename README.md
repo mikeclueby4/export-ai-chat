@@ -18,7 +18,7 @@ Adapted from [Kairox's script](https://greasyfork.org/scripts/573478) (MIT).
 
 ## Example Markdown output
 
-```markdown
+````markdown
 ---
 status: report
 title: "Exported LLM Chat: Sorting in Python"
@@ -41,4 +41,4 @@ Use `sorted` with a key function:
 people = [{"name": "Ann", "age": 31}, {"name": "Bob", "age": 25}]
 sorted(people, key=lambda p: p["age"])
 ```
-```
+````
