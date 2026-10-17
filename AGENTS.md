@@ -4,7 +4,7 @@
 
 An adapted/updated version of the Greasy Fork userscript **"Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML"** (script #573478, v1.0.0, by Kairox, MIT licence).
 
-The userscript adds a draggable floating "EXPORT" button to AI chat sites. Clicking it opens a menu to download the current conversation as Markdown, JSON, CSV, TXT, or HTML. Everything happens client-side by scraping the page DOM; nothing is sent over the network.
+The userscript adds a draggable floating "EXPORT" button to AI chat sites. Clicking it opens a menu to download the current conversation as Markdown, JSON, CSV, TXT, or HTML. Everything happens client-side by scraping the page DOM. Nothing goes to third parties. The only requests are read-only same-origin API calls for the conversation's start date (ChatGPT/Claude), plus whatever the site itself fetches when the script clicks Gemini source chips.
 
 - Upstream source: https://update.greasyfork.org/scripts/573478/Export%20ChatGPTGeminiGrokClaude%20Chat%20-%3E%20MD%2C%20JSON%2C%20CSV%2C%20TXT%2C%20HTML.user.js
 - Greasy Fork page: https://greasyfork.org/scripts/573478
@@ -27,7 +27,35 @@ Do not edit anything in `reference/`. All development happens in the root `expor
 - Removed the `i18n` table and `navigator.language` lookup. `exportLabel` is now the constant `"EXPORT"`.
 - Removed `@downloadURL` and `@updateURL`, so userscript managers won't auto-update it from Greasy Fork and overwrite our changes.
 - Changed `@namespace` from `AI_I18N_Final` to `mikeclueby4/export-ai-chat`. Managers identify a script by name + namespace, so the new namespace stops it being treated as the upstream script.
-- The rest of the code is unchanged from upstream so far.
+- v1.1.0: replaced `HtmlToMarkdown` and `Chat` with a per-site `Sites` table, a DOM-walking `Md` converter and a turn-based `Chat` (details below).
+
+## Output format (MD)
+
+```markdown
+---
+status: report
+title: "Exported LLM Chat: <chat title>"
+date: YYYY-MM-DD HH:mm        # conversation start if known, else export time (local time)
+updated: YYYY-MM-DD HH:mm     # export time; only present when the start date is known
+source: <origin + path of the chat>
+---
+
+# <chat title>
+
+## You said
+
+...
+
+## Gemini said
+
+...
+```
+
+- Turn headings are the site's own screen-reader label (e.g. Gemini's hidden "You said" / "Gemini said"), falling back to `Sites.<site>.labels`. Headings inside a message are shifted so they start at `###`.
+- Gemini inline source chips are resolved by clicking each chip and reading its hover card, rendered as ` ([Source: name](url))`. A multi-source chip yields several links. Gemini only keeps one card open at a time, so chips are resolved sequentially with a 3s timeout each. The first failure stops resolving, and the rest render as ` (Source: name +N)`.
+- Suggested-reply buttons (Gemini's `follow-up` "Yes") are dropped; the follow-up question text is kept as a paragraph.
+- JSON is `{title, source, date, updated?, messages: [{role, label, content}]}`; CSV is `role,label,content`; TXT is the same Markdown content with `Label:` lines.
+- Start dates come from same-origin API calls on ChatGPT (`/api/auth/session` + `/backend-api/conversation/{id}`) and Claude (`/api/organizations/{org}/chat_conversations/{id}`). Both are **unverified** guesses at the web clients' endpoints, with a 3s timeout and fallback to export time. Gemini and Grok have none.
 
 ## How the script is organized
 
@@ -36,32 +64,32 @@ All code lives in one IIFE. Line numbers refer to the root `export-ai-chat.user.
 | Lines | Part | What it does |
 |---|---|---|
 | 1–17 | `==UserScript==` header | `@include` for chatgpt.com, grok.com, gemini.google.com, claude.ai; grants `GM_addStyle`, `GM_setValue`, `GM_getValue` |
-| 22 | `exportLabel` | Button/menu label (upstream picked a translation here) |
-| 24–34 | `CommonUtil.createElement` | Small DOM element factory |
-| 36–97 | `HtmlToMarkdown.to(html, platform)` | Regex/DOM-based HTML→Markdown: KaTeX→`$…$`, bold/italic/code/links/images, per-platform code-block extraction, lists, headings, paragraphs |
-| 100–116 | `Chat.getElements()` | Detects the platform from the URL, finds the message nodes and the conversation title for each site |
-| 117–140 | `Chat.export(fmt)` | Builds the file content for each format and triggers a Blob download |
-| 143–162 | `GM_addStyle(...)` | Styles for the floating button and menu, including dark mode |
-| 164–215 | `init()` | Builds the button and menu, handles dragging (position saved with `GM_setValue`), places the menu by screen quadrant |
-| 217–221 | Bootstrap | Installs a pass-through `trustedTypes` default policy; runs `init` after 1s, then every 3s (re-injects after SPA navigation) |
+| 25–38 | `exportLabel`, `LOG`, `CommonUtil` | Button label, console prefix, small DOM element factory |
+| 40–68 | `Util` | Date formatting (local `YYYY-MM-DD HH:mm`), YAML quoting, filename sanitizing, timeouts, same-origin JSON fetch, scroll parent lookup |
+| 70–215 | `Sites` | **All per-site logic**: `match`, `labels`, `title`/`titleSuffix`, `turns()` → `[{el, role}]` in DOM order, `label(turn)`, `content(el)` (root to convert), `skip` selectors, `hook(el, ctx, md)` for custom elements, `preLang`, `startDate()`, and Gemini's `resolveSources`/`resolveChip` |
+| 217–345 | `SKIP`, `BLOCK_TAGS`, `Md` | Recursive DOM→Markdown walker over the live DOM (read-only): blocks, nested lists, tables, code fences, inline code, links, images, KaTeX, blockquotes. Code is kept behind placeholders so whitespace tidying can't touch it |
+| 347–430 | `Chat` | `collect()` resolves sources and the start date, then converts each turn; `frontmatter()`, `build(fmt)` per format, `export()` triggers the Blob download |
+| 432–451 | `GM_addStyle(...)` | Styles for the floating button and menu, including dark mode |
+| 453–515 | `init()` | Builds the button and menu, runs the async export with progress shown on the button, handles dragging (position saved with `GM_setValue`), places the menu by screen quadrant |
+| 517–521 | Bootstrap | Installs a pass-through `trustedTypes` default policy; runs `init` after 1s, then every 3s (re-injects after SPA navigation) |
 
 ### Per-site DOM selectors (likely to go stale)
 
-| Platform | Messages | Title | Code blocks |
-|---|---|---|---|
-| ChatGPT | `div[data-message-id]` | `#history a[data-active]` | `pre` (language label in `div > div:first-child`) |
-| Grok | `div.message-bubble` | `document.title` | `div.not-prose` |
-| Gemini | `user-query-content` + `model-response`, interleaved | `conversations-list div.selected` | `code-block` |
-| Claude | `[data-testid="user-message"], .font-claude-response` | `document.title` | `pre > code.language-*` |
+| Platform | Turns (role) | Label | Content root | Title | Code blocks |
+|---|---|---|---|---|---|
+| ChatGPT | `div[data-message-id]` (`data-message-author-role`) | `article h5.sr-only, h6.sr-only` (unverified) | `.markdown, .whitespace-pre-wrap` | `#history a[data-active]` | `pre` (language label in `div > div:first-child`) |
+| Grok | `div.message-bubble` (alternating) | — | whole bubble | `document.title` | `div.not-prose` |
+| Gemini | `user-query-content`, `model-response` (tag) | `.screen-reader-user-query-label span`, `.screen-reader-model-response-label` | `.query-text`, `message-content .markdown` | `document.title` minus ` - Google Gemini` (upstream's `conversations-list div.selected` was stale by 2026-10) | `code-block` (untested) |
+| Claude | `[data-testid="user-message"], .font-claude-response` | — | whole node | `document.title` minus ` - Claude` | `pre > code.language-*` |
 
-### Known limitations of the reference script
+Gemini extras (verified 2026-10-17): source chips are `source-inline-chip` (name in `.source-title`, count in `.source-count`); after a click the card renders inside the chip as `multi-source-hovered-card inline-source-card a[href]` with the name in `.path-text`, rendered twice. An Escape keydown on the chip button closes it but leaves `aria-expanded="true"`, so the next click only toggles it closed. Follow-ups are `follow-up` > `.follow-up-text` + `button.follow-up-button`.
 
-- Assumes messages strictly alternate user/assistant (`i % 2`). A trailing unanswered message is dropped, and any extra node shifts every pair after it.
+### Known limitations
+
+- Grok turns still assume strict user/assistant alternation.
 - Only the messages currently in the DOM are exported, so lazily rendered or virtualized history can be missing.
-- The Markdown converter loses nesting (nested lists, formatting inside links), has no table support, and strips tags with a regex.
 - HTML export embeds raw page `innerHTML`, including site classes and inline SVG, with no sanitizing.
-- TXT export uses `textContent`, so code-block buttons such as "Copy" show up in the output.
-- It registers a permissive global `trustedTypes` default policy, which weakens the host page's Trusted Types protection.
+- It registers a permissive global `trustedTypes` default policy, which weakens the host page's Trusted Types protection. (The Markdown path no longer needs it; the button's `innerHTML` still does.)
 - It uses `document.onmousemove`/`onmouseup` assignments, which can clobber the page's own handlers.
 - Polls `init` every 3s indefinitely.
 
@@ -77,3 +105,5 @@ All code lives in one IIFE. Line numbers refer to the root `export-ai-chat.user.
 ## Testing
 
 There are no automated tests. To test manually, install the script in a userscript manager, open a conversation on each supported site, export every format, and check the output: message order, roles, code fences and languages, math, lists, links, and the title/filename.
+
+Quick check without installing: Gemini's CSP blocks loading the file from localhost, so paste the IIFE into the page console (or a browser-automation JS tool). First stub `GM_addStyle`/`GM_getValue`/`GM_setValue` and wrap `URL.createObjectURL` to capture the Blob, then call the export and read `blob.text()`.
