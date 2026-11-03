@@ -2,8 +2,8 @@
 // @name         Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML
 // @description  Export ChatGPT, Gemini, Grok, Claude conversations to Markdown, JSON, CSV, TXT, HTML
 // @namespace    mikeclueby4/export-ai-chat
-// @version      1.1.0
-// @author       Kairox
+// @version      1.2.0
+// @author       mikeclueby4, Kairox
 // @include      *://chatgpt.com/*
 // @include      *://grok.com/*
 // @include      *://gemini.google.com/*
@@ -71,14 +71,39 @@
         chatGPT: {
             match: h => h.includes('chatgpt.com'),
             labels: { user: 'You said', assistant: 'ChatGPT said' },
-            title: () => document.querySelector('#history a[data-active]')?.textContent,
-            turns: () => [...document.querySelectorAll('div[data-message-id]')]
-                .map(el => ({ el, role: el.dataset.messageAuthorRole === 'user' ? 'user' : 'assistant' })),
-            label: t => t.el.closest('article')?.querySelector('h5.sr-only, h6.sr-only')?.textContent,
-            content: el => el.querySelector('.markdown, .whitespace-pre-wrap') || el,
-            skip: '',
-            preLang: pre => pre.querySelector('div > div:first-child')?.textContent,
-            // Unverified: endpoint and auth taken from ChatGPT's web client.
+            title: () => document.title,
+            titleSuffix: /\s*[-|]\s*ChatGPT$/,
+            // Each message follows a hidden <h4 data-conversation-role> holding "<span>You said:</span><span>You</span>".
+            turns: () => [...document.querySelectorAll('h4[data-conversation-role]')]
+                .filter(h => h.nextElementSibling)
+                .map(h => ({ el: h.nextElementSibling, head: h, role: h.dataset.conversationRole === 'user' ? 'user' : 'assistant' })),
+            label: t => t.head.querySelector('span')?.textContent,
+            content: el => el.querySelector('[class*="MarkdownRoot"], .whitespace-pre-wrap') || el,
+            skip: '[data-markdown-copy="exclude"]',
+            hook(el, ctx, md) {
+                // User text is plain text; keep its line breaks verbatim.
+                if (el.matches('.whitespace-pre-wrap') && !el.closest('[class*="MarkdownRoot"]')) {
+                    return md.block(md.code(ctx, el.textContent.replace(/\s+$/, '')));
+                }
+                if (el.matches('[data-code-block]')) {
+                    const lang = el.querySelector('[data-markdown-copy="exclude"] > div')?.textContent.trim().toLowerCase();
+                    const code = el.querySelector('[data-code-block-source] code, [data-code-block-source]');
+                    return md.fence(ctx, lang === 'plain text' ? 'text' : lang?.replace(/\s+/g, ''), code?.textContent ?? '');
+                }
+                if (el.matches('[data-markdown-copy="inline-code"]')) return md.inlineCode(ctx, el.textContent);
+                if (el.matches('[data-testid="chatgpt-writing-block"]')) {
+                    const text = el.dataset.markdownCopyText;
+                    if (text) return md.block(md.code(ctx, text.trim()));
+                }
+                if (el.matches('a[data-testid="chatgpt-citation"]')) {
+                    const name = [...el.querySelectorAll('span')].find(s => !s.children.length && !s.closest('[aria-hidden="true"]'))?.textContent.trim() || 'link';
+                    const more = el.querySelector('[aria-hidden="true"]')?.textContent.trim();
+                    const u = new URL(el.href);
+                    if (u.searchParams.get('utm_source') === 'chatgpt.com') u.searchParams.delete('utm_source');
+                    return ` ([Source: ${name.replace(/[\[\]]/g, '')}](${md.url(u.href)})${more ? ' ' + more : ''})`;
+                }
+            },
+            // Verified 2026-11-03: returns create_time in epoch seconds.
             async startDate() {
                 const id = location.pathname.match(/\/c\/([\w-]+)/)?.[1];
                 if (!id) return null;
