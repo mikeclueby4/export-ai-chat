@@ -2,7 +2,7 @@
 // @name         Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML
 // @description  Export ChatGPT, Gemini, Grok, Claude conversations to Markdown, JSON, CSV, TXT, HTML
 // @namespace    mikeclueby4/export-ai-chat
-// @version      1.2.1
+// @version      1.3.0
 // @author       mikeclueby4, Kairox
 // @include      *://chatgpt.com/*
 // @include      *://grok.com/*
@@ -215,22 +215,58 @@
         },
         claude: {
             match: h => h.includes('claude.ai'),
-            labels: { user: 'You said', assistant: 'Claude said' },
+            labels: { user: 'You said', assistant: 'Claude responded' },
             title: () => document.title,
             titleSuffix: /\s*-\s*Claude$/,
-            turns: () => [...document.querySelectorAll('[data-testid="user-message"], .font-claude-response')]
+            turns: () => [...document.querySelectorAll('[data-testid="user-message"], [data-testid="assistant-message"]')]
                 .map(el => ({ el, role: el.matches('[data-testid="user-message"]') ? 'user' : 'assistant' })),
-            content: el => el,
-            skip: '',
-            // Unverified: endpoint taken from claude.ai's web client.
-            async startDate() {
+            // DOM selectors are only used for HTML export, which copies the rendered (virtualized) turns.
+            // A hidden <h3> holds "You said: <text>" / "Claude responded: <text>"; take the part before the colon.
+            label: t => (t.role === 'user' ? t.el.closest('[data-testid="transcript-row"]')?.querySelector('h3') : t.el.querySelector(':scope > h3'))
+                ?.textContent.match(/^([^:]+):/)?.[1],
+            content: el => el.querySelector(':scope > h3 + div') || el,
+            // All other formats come from the web client's conversation API (verified 2026-11-08): the whole
+            // conversation, with text blocks as raw Markdown, citations and artifact links.
+            async api() {
                 const id = location.pathname.match(/\/chat\/([\w-]+)/)?.[1];
-                if (!id) return null;
+                if (!id) throw new Error('no conversation id in URL');
                 let org = document.cookie.match(/(?:^|;\s*)lastActiveOrg=([^;]+)/)?.[1];
                 if (!org) org = (await Util.fetchJson('/api/organizations'))?.[0]?.uuid;
-                if (!org) return null;
-                const conv = await Util.fetchJson(`/api/organizations/${org}/chat_conversations/${id}`);
-                return conv.created_at ? new Date(conv.created_at) : null;
+                const conv = await Util.fetchJson(`/api/organizations/${org}/chat_conversations/${id}?tree=True&rendering_mode=messages&render_all_tools=true`);
+                // The tree holds every branch; walk back from the current leaf.
+                const byId = new Map(conv.chat_messages.map(m => [m.uuid, m]));
+                const branch = [];
+                for (let m = byId.get(conv.current_leaf_message_uuid); m; m = byId.get(m.parent_message_uuid)) branch.unshift(m);
+                return {
+                    startDate: new Date(conv.created_at),
+                    turns: branch.map(m => {
+                        const role = m.sender === 'human' ? 'user' : 'assistant';
+                        return { role, label: this.labels[role], md: Md.shiftHeadings(this.apiMd(m)) };
+                    })
+                };
+            },
+            // Text blocks with ` ([Source: title](url))` after each cited span, and `[Artifact: title](url)` for
+            // artifacts opened by tools. Thinking and tool use are dropped.
+            apiMd(m) {
+                let out = '', gap = false;
+                const seen = new Set(), para = s => { out += (out ? '\n\n' : '') + s; };
+                for (const c of m.content || []) {
+                    if (c.type === 'text') {
+                        let t = c.text;
+                        for (const ci of [...(c.citations || [])].sort((a, b) => b.end_index - a.end_index)) {
+                            const links = (ci.sources || []).filter(s => s.url).map(s => `[Source: ${(s.title || 'link').replace(/[\[\]]/g, '')}](${Md.url(s.url)})`);
+                            if (links.length) t = t.slice(0, ci.end_index) + ` (${links.join(', ')})` + t.slice(ci.end_index);
+                        }
+                        // Consecutive text blocks continue each other; a tool call in between starts a new paragraph.
+                        if (gap) para(t.trim()); else out += t;
+                        gap = false;
+                        continue;
+                    }
+                    gap = true;
+                    const a = c.type === 'tool_result' && c.structured_content;
+                    if (a?.url && a.title && !seen.has(a.url)) { seen.add(a.url); para(`[Artifact: ${a.title.replace(/[\[\]]/g, '')}](${Md.url(a.url)})`); }
+                }
+                return out.trim();
             }
         }
     };
@@ -364,7 +400,21 @@
             .replace(/\n[ \t]+/g, '\n')
             .replace(/([^\s\u0001]) {2,}/g, '$1 ')
             .replace(/\n{3,}/g, '\n\n')
-            .trim()
+            .trim(),
+        // For Markdown that arrives ready-made: shift ATX headings outside code fences so they start at ###.
+        shiftHeadings(s) {
+            const lines = s.split('\n'), heads = [];
+            let fence = null;
+            lines.forEach((l, i) => {
+                const f = l.match(/^\s*(`{3,}|~{3,})/)?.[1];
+                if (f) { if (!fence) fence = f; else if (f[0] === fence[0] && f.length >= fence.length) fence = null; }
+                else if (!fence && /^#{1,6}\s/.test(l)) heads.push(i);
+            });
+            if (!heads.length) return s;
+            const shift = Math.max(0, 3 - Math.min(...heads.map(i => lines[i].match(/^#+/)[0].length)));
+            heads.forEach(i => { lines[i] = lines[i].replace(/^#+/, h => '#'.repeat(Math.min(6, h.length + shift))); });
+            return lines.join('\n');
+        }
     };
 
     // ---- Export ----
@@ -374,6 +424,17 @@
         async collect(fmt, progress) {
             const site = this.site();
             if (!site) return null;
+            const rawTitle = (site.title() || document.title || '').trim();
+            const title = (site.titleSuffix ? rawTitle.replace(site.titleSuffix, '') : rawTitle).trim() || 'Export';
+            const base = { site, title, exportDate: new Date(), source: location.origin + location.pathname };
+
+            // Sites with an API get the whole conversation from it; HTML still copies the rendered DOM.
+            if (site.api && fmt !== 'html') {
+                progress?.('Loading…');
+                const { startDate, turns } = await site.api();
+                return { ...base, startDate: Util.validDate(startDate), turns };
+            }
+
             const turns = site.turns();
             if (!turns.length) return null;
 
@@ -400,12 +461,10 @@
                 });
             }
 
-            const rawTitle = (site.title() || document.title || '').trim();
-            const title = (site.titleSuffix ? rawTitle.replace(site.titleSuffix, '') : rawTitle).trim() || 'Export';
             return {
-                site, title, startDate,
-                exportDate: new Date(),
-                source: location.origin + location.pathname,
+                ...base, startDate,
+                // The page renders only part of a long conversation, so HTML may be incomplete.
+                warning: fmt === 'html' && site.api ? 'HTML: rendered turns only' : null,
                 turns: turns.map(t => ({
                     role: t.role,
                     label: (site.label?.(t) || site.labels[t.role]).trim().replace(/:$/, ''),
@@ -451,6 +510,7 @@
             const u = URL.createObjectURL(b), a = document.createElement("a");
             a.href = u; a.download = `${Util.fileName(d.title)}.${fmt}`; document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(u); }, 0);
+            return d.warning;
         }
     };
 
@@ -492,13 +552,17 @@
                     btn.classList.remove('clicked');
                     menu.style.display = 'none';
                     busy = true;
+                    let note = null;
                     try {
-                        await Chat.export(ext, msg => { labelSpan.textContent = msg; });
+                        note = await Chat.export(ext, msg => { labelSpan.textContent = msg; });
                     } catch (err) {
                         console.error(LOG, 'export failed:', err);
+                        note = 'Export failed (see console)';
                     } finally {
                         busy = false;
-                        labelSpan.textContent = exportLabel;
+                        // A warning or error stays on the button for a few seconds.
+                        labelSpan.textContent = note || exportLabel;
+                        if (note) setTimeout(() => { if (!busy) labelSpan.textContent = exportLabel; }, 5000);
                     }
                 }, 200);
             };
