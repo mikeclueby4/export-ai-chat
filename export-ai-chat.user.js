@@ -2,7 +2,7 @@
 // @name         Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML
 // @description  Export ChatGPT, Gemini, Grok, Claude conversations to Markdown, JSON, CSV, TXT, HTML
 // @namespace    mikeclueby4/export-ai-chat
-// @version      1.3.0
+// @version      1.3.1
 // @author       mikeclueby4, Kairox
 // @include      *://chatgpt.com/*
 // @include      *://grok.com/*
@@ -508,7 +508,8 @@
             const { c, m } = this.build(fmt, d);
             const b = new Blob([c], { type: m });
             const u = URL.createObjectURL(b), a = document.createElement("a");
-            a.href = u; a.download = `${Util.fileName(d.title)}.${fmt}`; document.body.appendChild(a); a.click();
+            const day = Util.fmtDate(d.startDate || d.exportDate).slice(0, 10).replace(/-/g, '');
+            a.href = u; a.download = `${day}-${Util.fileName(d.title)}.${fmt}`; document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(u); }, 0);
             return d.warning;
         }

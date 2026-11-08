@@ -31,6 +31,7 @@ Do not edit anything in `reference/`. All development happens in the root `expor
 - v1.2.0: rewrote the ChatGPT selectors for its 2026-11 DOM: turns, code blocks, inline code, citation pills and writing blocks.
 - v1.2.1: the button is anchored to the bottom-right corner (it was positioned from the top-left), so it stays in place when the window is resized or zoomed.
 - v1.3.0: Claude exports MD/JSON/CSV/TXT from its conversation API, because the 2026-11 transcript is virtualized (a 16-turn chat had 5 rows mounted). HTML still copies the rendered DOM, with new selectors, and the button warns that it holds only rendered turns. Export errors and warnings now show on the button for 5s.
+- v1.3.1: export filenames start with `YYYYMMDD-`, using the same date as the frontmatter `date` (the conversation start if known, else the export time).
 
 ## Output format (MD)
 
