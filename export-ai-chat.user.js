@@ -2,7 +2,7 @@
 // @name         Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML
 // @description  Export ChatGPT, Gemini, Grok, Claude conversations to Markdown, JSON, CSV, TXT, HTML
 // @namespace    mikeclueby4/export-ai-chat
-// @version      1.3.1
+// @version      1.5.1
 // @author       mikeclueby4, Kairox
 // @include      *://chatgpt.com/*
 // @include      *://grok.com/*
@@ -14,6 +14,7 @@
 // @grant        GM_addStyle
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        unsafeWindow
 // ==/UserScript==
 
 // Based on "Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML" v1.0.0
@@ -38,7 +39,6 @@
     };
 
     const Util = {
-        sleep: ms => new Promise(r => setTimeout(r, ms)),
         pad: n => String(n).padStart(2, '0'),
         // Local time as "YYYY-MM-DD HH:mm"
         fmtDate(d) {
@@ -55,13 +55,6 @@
             return r.json();
         },
         validDate: d => (d instanceof Date && !isNaN(d)) ? d : null,
-        scrollParent(el) {
-            for (let e = el?.parentElement; e; e = e.parentElement) {
-                const oy = getComputedStyle(e).overflowY;
-                if ((oy === 'auto' || oy === 'scroll') && e.scrollHeight > e.clientHeight) return e;
-            }
-            return document.scrollingElement;
-        },
         escHtml: s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     };
 
@@ -131,86 +124,137 @@
         gemini: {
             match: h => h.includes('gemini.google.com'),
             labels: { user: 'You said', assistant: 'Gemini said' },
-            title: () => document.title,
+            reportLabel: 'Deep Research report',
+            // While the Deep Research pane is open, every format exports that report instead of the chat.
+            pane: () => document.querySelector('deep-research-immersive-panel'),
+            title() { return this.pane()?.querySelector('h2.title-text')?.textContent || document.title; },
             titleSuffix: /\s*-\s*Google Gemini$/,
-            turns: () => [...document.querySelectorAll('user-query-content, model-response')]
-                .map(el => ({ el, role: el.matches('user-query-content') ? 'user' : 'assistant' })),
+            // DOM selectors are only used for HTML export, which copies the rendered turns.
+            turns() {
+                const pane = this.pane();
+                if (pane) return [{ el: pane, role: 'assistant', report: true }];
+                return [...document.querySelectorAll('user-query-content, model-response')]
+                    .map(el => ({ el, role: el.matches('user-query-content') ? 'user' : 'assistant' }));
+            },
             // The hidden heading holds "<span>You said</span> <truncated query>"; take only the span.
-            label: t => t.role === 'user'
-                ? t.el.querySelector('.screen-reader-user-query-label span')?.textContent
-                : t.el.querySelector('.screen-reader-model-response-label')?.textContent,
+            label(t) {
+                if (t.report) return this.reportLabel;
+                return t.role === 'user'
+                    ? t.el.querySelector('.screen-reader-user-query-label span')?.textContent
+                    : t.el.querySelector('.screen-reader-model-response-label')?.textContent;
+            },
             content: el => el.querySelector('.query-text') || el.querySelector('message-content .markdown') || el,
-            skip: 'source-footnote, thinking-overlay, model-thoughts, sources-list, .response-footer, .follow-up-button-container',
-            chipSelector: 'source-inline-chip',
-            hook(el, ctx, md) {
-                const tag = el.tagName.toLowerCase();
-                if (tag === 'source-inline-chip') {
-                    const links = ctx.sources?.get(el);
-                    if (links?.length) return ' (' + links.map(l => `[Source: ${l.name.replace(/[\[\]]/g, '')}](${md.url(l.href)})`).join(', ') + ')';
-                    const name = el.querySelector('.source-title')?.textContent.trim();
-                    const count = el.querySelector('.source-count')?.textContent.replace(/\s+/g, '');
-                    return name ? ` (Source: ${name}${count ? ' ' + count : ''})` : '';
+            // All other formats come from the web client's batchexecute "hNvQHb" RPC (verified 2026-11-09): every turn,
+            // raw Markdown, citations with URLs and canvas contents.
+            async api() {
+                const id = location.pathname.match(/\/app\/(\w+)/)?.[1];
+                if (!id) throw new Error('no conversation id in URL');
+                const W = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).WIZ_global_data;
+                const rpc = 'hNvQHb', limit = 100;
+                const qs = new URLSearchParams({ rpcids: rpc, 'source-path': location.pathname, bl: W.cfb2h, 'f.sid': W.FdrFJe, hl: 'en', _reqid: String(Date.now() % 900000 + 100000), rt: 'c' });
+                const body = new URLSearchParams({ 'f.req': JSON.stringify([[[rpc, JSON.stringify(['c_' + id, limit, null, 1, [1], [4], null, 1]), null, 'generic']]]), at: W.SNlM0e });
+                const r = await fetch('/_/BardChatUi/data/batchexecute?' + qs, { method: 'POST', body, credentials: 'same-origin' });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                // The body is ")]}'" plus length-prefixed chunks; the result is a JSON string inside the "wrb.fr" envelope.
+                const env = JSON.parse((await r.text()).split('\n').find(l => l.startsWith('[["wrb.fr"')) || 'null');
+                if (!env?.[0]?.[2]) throw new Error('no conversation data');
+                const data = JSON.parse(env[0][2]);
+                // [1] is a continuation token when older turns didn't fit; paging isn't implemented.
+                if (data[1]) throw new Error(`over ${limit} turns not supported`);
+                const turns = data[0].reverse();
+                // Each turn holds its response drafts; [3][3] is the id of the one shown.
+                const cands = turns.map(t => t[3][0].find(c => c[0] === t[3][3]));
+                if (cands.includes(undefined)) throw new Error('shown response draft not found');
+                // Every turn returns a canvas's current version, so its content goes with the last turn that shows it.
+                const lastUse = new Map();
+                cands.forEach((c, i) => (c[30] || []).forEach(v => lastUse.set(v[0], i)));
+                const pane = this.pane();
+                if (pane) {
+                    // The report's paragraphs have ids "p-<canvas id>-<n>".
+                    const id = pane.querySelector('[id^="p-"]')?.id.match(/^p-(.+)-\d+$/)?.[1];
+                    const i = lastUse.get(id);
+                    if (i === undefined) throw new Error('open report not found');
+                    const v = cands[i][30].find(v => v[0] === id);
+                    return {
+                        startDate: new Date(turns[i][4][0] * 1000),
+                        turns: [{ role: 'assistant', label: this.reportLabel, md: Md.shiftHeadings(this.reportMd(v)) }]
+                    };
                 }
-                if (tag === 'follow-up') {
-                    const q = el.querySelector('.follow-up-text');
-                    return q ? md.block(md.children(q, ctx)) : '';
-                }
-                if (tag === 'code-block') {
-                    const lang = el.querySelector('.code-block-decoration span, div > div > span')?.textContent;
-                    return md.fence(ctx, lang, el.querySelector('pre code, pre')?.textContent ?? el.textContent);
-                }
-                if (el.hasAttribute('data-math')) {
-                    const tex = el.getAttribute('data-math').trim();
-                    return el.classList.contains('math-block') ? md.block(md.code(ctx, `$$\n${tex}\n$$`)) : md.code(ctx, `$${tex}$`);
-                }
+                const out = turns.flatMap((t, i) => [
+                    // A blank line before a lone ---/=== line keeps it a rule instead of a setext heading.
+                    { role: 'user', label: this.labels.user, md: Md.shiftHeadings(t[2][0][0].trim().replace(/^(.*\S.*)\n([ \t]*(?:-+|=+)[ \t]*)$/gm, '$1\n\n$2')) },
+                    { role: 'assistant', label: this.labels.assistant, md: Md.shiftHeadings(this.apiMd(cands[i], i, lastUse)) }
+                ]);
+                const left = out.flatMap(t => t.md.match(/http:\/\/googleusercontent\.com\/\w+\/\d+/g) || []);
+                if (left.length) console.warn(LOG, 'unresolved Gemini placeholders:', left);
+                return {
+                    startDate: new Date(turns[0][4][0] * 1000),
+                    turns: out,
+                    warning: left.length ? `${left.length} unresolved placeholder(s)` : null
+                };
             },
-            // Gemini only shows one source card at a time, so chips are resolved one by one.
-            // The first failure stops resolving; the remaining chips fall back to plain text.
-            async resolveSources(chips, progress) {
-                const map = new Map();
-                for (let i = 0; i < chips.length; i++) {
-                    progress?.(`Sources ${i + 1}/${chips.length}`);
-                    try {
-                        const links = await this.resolveChip(chips[i]);
-                        if (!links.length) throw new Error('no links');
-                        map.set(chips[i], links);
-                    } catch (e) {
-                        console.warn(LOG, `source resolving stopped at chip ${i + 1}/${chips.length}:`, e.message);
-                        break;
-                    }
+            // Response Markdown with ` ([Source: title](url))` after each cited span, and canvas and Deep Research
+            // plan placeholders replaced by their content.
+            apiMd(c, i, lastUse) {
+                // Citation ranges are UTF-8 byte offsets into the Markdown; [0][3][0] is [start, end].
+                const bytes = new TextEncoder().encode(c[1][0]), dec = new TextDecoder();
+                const ends = new Map();
+                for (const ci of c[2]?.[1] || []) {
+                    const end = ci[0][3][0][1];
+                    const links = ci[2].filter(s => s[0]).map(s => `[Source: ${(s[1] || s[6] || 'link').replace(/[\[\]]/g, '')}](${Md.url(s[0])})`);
+                    if (links.length) ends.set(end, [...(ends.get(end) || []), ...links]);
                 }
-                return map;
+                let t = '', pos = 0;
+                for (const end of [...ends.keys()].sort((a, b) => a - b)) {
+                    t += dec.decode(bytes.slice(pos, end)) + ` (${ends.get(end).join(', ')})`;
+                    pos = end;
+                }
+                t += dec.decode(bytes.slice(pos));
+                // [12] holds an object keyed by content type, at a varying index.
+                const extra = Object.assign({}, ...(c[12] || []).filter(x => x && typeof x === 'object' && !Array.isArray(x)));
+                // Answers grounded in attached Google Docs cite with "[cite: n]" too. "44" is [[marker], sources] per
+                // marker, the sources in the marker's number order as [, [[, , title, …]]], with no URL.
+                const src = new Map();
+                for (const [[m], list] of extra['44'] || []) m.match(/\d+/g).forEach((n, k) => list[k] && src.set(+n, list[k][1][0][2].replace(/[\[\]]/g, '')));
+                t = this.footnotes(t, src, `${i + 1}.`);
+                // Canvases: "57" maps each placeholder to a canvas id; [30] holds [id, , title, , content, …, filename].
+                // A code canvas's filename has an extension; a Deep Research report's is its id.
+                const ids = new Map((extra['57'] || []).map(e => [e[0][0], e[1]]));
+                const canvases = new Map((c[30] || []).map(v => [v[0], v]));
+                // Placeholders swallow the line breaks around them so their content sits in its own paragraphs.
+                return t.replace(/\n*(http:\/\/googleusercontent\.com\/immersive_entry_chip\/\d+)\n*/g, (m, ph) => {
+                    const v = canvases.get(ids.get(ph));
+                    if (!v) return m;
+                    const ext = v[9].match(/\.(\w+)$/)?.[1];
+                    const name = ext ? `Canvas: ${v[2]} (${v[9]})` : `${this.reportLabel}: ${v[2]}`;
+                    if (lastUse.get(v[0]) !== i) return `\n\n*[${name}, current version in a later turn]*\n\n`;
+                    if (!ext) return `\n\n**${name}**\n\n${this.reportMd(v, `${i + 1}.`)}\n\n`;
+                    const f = '`'.repeat(Math.max(3, ...(v[4].match(/`+/g) || []).map(r => r.length + 1)));
+                    return `\n\n**${name}**\n\n${f}${ext}\n${v[4].replace(/\n+$/, '')}\n${f}\n\n`;
+                }).replace(/\n*(http:\/\/googleusercontent\.com\/deep_research_confirmation_content\/\d+)\n*/g, (m, ph) => {
+                    // The research plan: "56" is [title, [[n, step, details], …], eta, buttons, [placeholder, n], …].
+                    const p = extra['56'];
+                    if (p?.[4]?.[0] !== ph) return m;
+                    const steps = p[1].map(([n, step, details]) => `${n}. ${step}` + (details
+                        ? '\n\n' + details.split('\n').map(l => l.trim()).filter(Boolean).map(l => '   ' + l).join('\n\n') : ''));
+                    return `\n\n**Research plan: ${p[0]}**\n\n${steps.join('\n')}\n\n`;
+                }).trim();
             },
-            async resolveChip(chip) {
-                const btn = chip.querySelector('button');
-                if (!btn) throw new Error('no chip button');
-                const anchors = () => chip.querySelectorAll('inline-source-card a[href]');
-                const esc = () => ['keydown', 'keyup'].forEach(type => btn.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true })));
-                try {
-                    if (!anchors().length) {
-                        btn.focus({ preventScroll: true });
-                        // After an Escape the chip stays aria-expanded, and the next click only toggles it closed.
-                        if (btn.getAttribute('aria-expanded') === 'true') { btn.click(); await Util.sleep(100); }
-                        btn.click();
-                    }
-                    const deadline = Date.now() + 3000;
-                    while (!anchors().length) {
-                        if (Date.now() > deadline) throw new Error('timeout');
-                        await Util.sleep(100);
-                    }
-                    const fallback = chip.querySelector('.source-title')?.textContent.trim() || 'link';
-                    const seen = new Set(), out = [];
-                    // Cards are rendered twice; dedupe by URL.
-                    for (const a of anchors()) {
-                        if (seen.has(a.href)) continue;
-                        seen.add(a.href);
-                        out.push({ name: (a.querySelector('.path-text')?.textContent || fallback).trim(), href: a.href });
-                    }
-                    return out;
-                } finally {
-                    esc();
-                    await Util.sleep(50);
+            // " [cite: 1, 2]" markers become footnotes [^pre1][^pre2], plus a source list; src maps number → Markdown.
+            // The prefix keeps footnotes from different turns of one export apart.
+            footnotes(md, src, pre = '') {
+                md = md.replace(/ ?\[cite:\s*([\d,\s]+)\]/g, (m, ns) => ns.split(/,\s*/).map(n => `[^${pre}${n.trim()}]`).join(''));
+                const nums = [...src.keys()].sort((a, b) => a - b);
+                if (!nums.length) return md;
+                return md + '\n\n**Sources**\n\n' + nums.map(n => `[^${pre}${n}]: ${src.get(n)}`).join('\n');
+            },
+            // A Deep Research report's [5][0]["44"] lists each marker's sources as [, , , [[favicon, url, title, …], number, …]].
+            reportMd(v, pre) {
+                const src = new Map();
+                for (const [, list] of v[5]?.[0]?.['44'] || []) for (const s of list) {
+                    src.set(s[3][1], `[${(s[3][0][2] || 'link').replace(/[\[\]]/g, '')}](${Md.url(s[3][0][1])})`);
                 }
+                return this.footnotes(v[4].trim(), src, pre);
             }
         },
         claude: {
@@ -279,8 +323,8 @@
     const BLOCK_TAGS = new Set(['div', 'section', 'article', 'header', 'footer', 'main', 'aside', 'nav', 'figure', 'figcaption', 'details', 'summary', 'dl', 'dt', 'dd', 'li']);
 
     const Md = {
-        convert(root, site, sources) {
-            const ctx = { site, sources, codes: [], hOffset: 0 };
+        convert(root, site) {
+            const ctx = { site, codes: [], hOffset: 0 };
             const levels = [...root.querySelectorAll('h1, h2, h3, h4, h5, h6')]
                 .filter(h => !h.closest(SKIP)).map(h => +h.tagName[1]);
             // Turn headings are ##, so headings inside a message start at ###.
@@ -431,26 +475,12 @@
             // Sites with an API get the whole conversation from it; HTML still copies the rendered DOM.
             if (site.api && fmt !== 'html') {
                 progress?.('Loading…');
-                const { startDate, turns } = await site.api();
-                return { ...base, startDate: Util.validDate(startDate), turns };
+                const { startDate, turns, warning } = await site.api();
+                return { ...base, startDate: Util.validDate(startDate), turns, warning };
             }
 
             const turns = site.turns();
             if (!turns.length) return null;
-
-            let sources = new Map();
-            if (fmt !== 'html' && site.resolveSources) {
-                const chips = turns.flatMap(t => [...site.content(t.el).querySelectorAll(site.chipSelector)]);
-                if (chips.length) {
-                    const scroller = Util.scrollParent(turns[0].el), top = scroller?.scrollTop, active = document.activeElement;
-                    try {
-                        sources = await site.resolveSources(chips, progress);
-                    } finally {
-                        if (scroller) scroller.scrollTop = top;
-                        active?.focus?.({ preventScroll: true });
-                    }
-                }
-            }
 
             let startDate = null;
             if (site.startDate) {
@@ -469,7 +499,7 @@
                     role: t.role,
                     label: (site.label?.(t) || site.labels[t.role]).trim().replace(/:$/, ''),
                     contentEl: site.content(t.el),
-                    md: fmt === 'html' ? '' : Md.convert(site.content(t.el), site, sources)
+                    md: fmt === 'html' ? '' : Md.convert(site.content(t.el), site)
                 }))
             };
         },
