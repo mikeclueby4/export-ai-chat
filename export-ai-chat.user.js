@@ -2,7 +2,7 @@
 // @name         Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML
 // @description  Export ChatGPT, Gemini, Grok, Claude conversations to Markdown, JSON, CSV, TXT, HTML
 // @namespace    mikeclueby4/export-ai-chat
-// @version      1.2.0
+// @version      1.2.1
 // @author       mikeclueby4, Kairox
 // @include      *://chatgpt.com/*
 // @include      *://grok.com/*
@@ -506,17 +506,28 @@
         });
         box.appendChild(menu);
         document.body.appendChild(box);
-        const sX = GM_getValue('x', window.innerWidth - 160), sY = GM_getValue('y', window.innerHeight - 100);
-        box.style.left = Math.max(0, Math.min(sX, window.innerWidth - 120)) + 'px'; box.style.top = Math.max(0, Math.min(sY, window.innerHeight - 60)) + 'px';
-        let drag = false, moved = false, sX0, sY0, iL, iT;
-        box.onmousedown = (e) => { drag = true; moved = false; sX0 = e.clientX; sY0 = e.clientY; iL = box.offsetLeft; iT = box.offsetTop; e.preventDefault(); };
+        // Anchored to the bottom-right corner, so it follows window resizes and zoom.
+        // The saved offsets are kept as-is; only the applied position is clamped to the viewport.
+        let offR = GM_getValue('right', 40), offB = GM_getValue('bottom', 60);
+        const place = (r, b) => {
+            box.style.right = Math.max(0, Math.min(r, window.innerWidth - box.offsetWidth)) + 'px';
+            box.style.bottom = Math.max(0, Math.min(b, window.innerHeight - box.offsetHeight)) + 'px';
+        };
+        place(offR, offB);
+        const onResize = () => { if (!box.isConnected) return window.removeEventListener('resize', onResize); place(offR, offB); };
+        window.addEventListener('resize', onResize);
+        let drag = false, moved = false, sX0, sY0, iR, iB;
+        box.onmousedown = (e) => { drag = true; moved = false; sX0 = e.clientX; sY0 = e.clientY; iR = parseFloat(box.style.right); iB = parseFloat(box.style.bottom); e.preventDefault(); };
         document.onmousemove = (e) => {
             if (!drag) return;
             const dx = e.clientX - sX0, dy = e.clientY - sY0;
             if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
-            box.style.left = (iL + dx) + 'px'; box.style.top = (iT + dy) + 'px';
+            place(iR - dx, iB - dy);
         };
-        document.onmouseup = () => { if (drag && moved) { GM_setValue('x', box.offsetLeft); GM_setValue('y', box.offsetTop); } drag = false; };
+        document.onmouseup = () => {
+            if (drag && moved) { offR = parseFloat(box.style.right); offB = parseFloat(box.style.bottom); GM_setValue('right', offR); GM_setValue('bottom', offB); }
+            drag = false;
+        };
         box.onclick = () => {
             if (!moved) {
                 if (menu.style.display !== 'flex') {

@@ -29,6 +29,7 @@ Do not edit anything in `reference/`. All development happens in the root `expor
 - Changed `@namespace` from `AI_I18N_Final` to `mikeclueby4/export-ai-chat`. Managers identify a script by name + namespace, so the new namespace stops it being treated as the upstream script.
 - v1.1.0: replaced `HtmlToMarkdown` and `Chat` with a per-site `Sites` table, a DOM-walking `Md` converter and a turn-based `Chat` (details below).
 - v1.2.0: rewrote the ChatGPT selectors for its 2026-11 DOM: turns, code blocks, inline code, citation pills and writing blocks.
+- v1.2.1: the button is anchored to the bottom-right corner (it was positioned from the top-left), so it stays in place when the window is resized or zoomed.
 
 ## Output format (MD)
 
@@ -72,8 +73,8 @@ All code lives in one IIFE. Line numbers refer to the root `export-ai-chat.user.
 | 238–368 | `SKIP`, `BLOCK_TAGS`, `Md` | Recursive DOM→Markdown walker over the live DOM (read-only): blocks, nested lists, tables, code fences, inline code, links, images, KaTeX, blockquotes. Code is kept behind placeholders so whitespace tidying can't touch it |
 | 370–455 | `Chat` | `collect()` resolves sources and the start date, then converts each turn; `frontmatter()`, `build(fmt)` per format, `export()` triggers the Blob download |
 | 457–476 | `GM_addStyle(...)` | Styles for the floating button and menu, including dark mode |
-| 478–540 | `init()` | Builds the button and menu, runs the async export with progress shown on the button, handles dragging (position saved with `GM_setValue`), places the menu by screen quadrant |
-| 542–546 | Bootstrap | Installs a pass-through `trustedTypes` default policy; runs `init` after 1s, then every 3s (re-injects after SPA navigation) |
+| 478–551 | `init()` | Builds the button and menu, runs the async export with progress shown on the button, handles dragging, places the menu by screen quadrant. The button is anchored bottom-right (`right`/`bottom` offsets saved with `GM_setValue`) and re-clamped to the viewport on `resize`, so it follows window resizing and zoom |
+| 553–557 | Bootstrap | Installs a pass-through `trustedTypes` default policy; runs `init` after 1s, then every 3s (re-injects after SPA navigation) |
 
 ### Per-site DOM selectors (likely to go stale)
 
