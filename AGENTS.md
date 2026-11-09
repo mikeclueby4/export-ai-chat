@@ -36,6 +36,8 @@ Do not edit anything in `reference/`. All development happens in the root `expor
 - v1.5.0: Gemini Deep Research. While the report pane is open, every format exports the report alone, with `[cite: n]` markers turned into Markdown footnotes and a numbered source list. In chat exports the report is embedded the same way, and the research plan is rendered instead of left as a placeholder.
 - v1.5.1: Gemini chat answers grounded in attached Google Docs also cite with `[cite: n]`. These now become footnotes, with the Doc titles as sources. In chat exports, footnote labels are prefixed with the turn number (`[^3.12]`), so a report and an answer in the same export don't collide.
 
+- v1.5.2: CSV cells starting with `= + - @ tab CR` get a leading `'` (formula injection). The exported HTML carries a `<meta>` CSP (`default-src 'none'; style-src 'unsafe-inline'; img-src data:`), so the saved file runs no script and loads nothing remote. Remote images in it no longer show.
+
 ## Output format (MD)
 
 ```markdown
