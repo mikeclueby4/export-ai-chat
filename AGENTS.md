@@ -35,6 +35,13 @@ Do not edit anything in `reference/`. All development happens in the root `expor
 - v1.4.0: Gemini exports MD/JSON/CSV/TXT from its `hNvQHb` RPC. This gives raw Markdown, citation URLs without clicking chips, canvas contents (absent from the DOM) and a start date. HTML still copies the rendered DOM, with the "rendered turns only" warning. The chip-clicking code is gone.
 - v1.5.0: Gemini Deep Research. While the report pane is open, every format exports the report alone, with `[cite: n]` markers turned into Markdown footnotes and a numbered source list. In chat exports the report is embedded the same way, and the research plan is rendered instead of left as a placeholder.
 - v1.5.1: Gemini chat answers grounded in attached Google Docs also cite with `[cite: n]`. These now become footnotes, with the Doc titles as sources. In chat exports, footnote labels are prefixed with the turn number (`[^3.12]`), so a report and an answer in the same export don't collide.
+- v1.6.0: warnings and errors appear in a toast next to the button instead of on its label. Warnings fade after 10s; errors show their message and stay until clicked. API exports are checked for signs of a moved field that would otherwise lose content silently:
+  - empty messages
+  - footnote references with no source
+  - leftover `[cite: …]` markers
+  - for Gemini, unresolved placeholders (now listed by type) and web citations without a URL
+
+  Code blocks are excluded from the checks. Verified 2026-11-09: clean exports of the Deep Research and Debian chats show no toast; renaming the `"44"` key gave "58 footnote(s) without a source"; an HTTP 400 gave an error toast.
 
 ## Output format (MD)
 
@@ -75,12 +82,12 @@ All code lives in one IIFE. Line numbers refer to the root `export-ai-chat.user.
 | 1–18 | `==UserScript==` header | `@include` for chatgpt.com, grok.com, gemini.google.com, claude.ai; grants `GM_addStyle`, `GM_setValue`, `GM_getValue`, `unsafeWindow` (Gemini's `WIZ_global_data`) |
 | 26–39 | `exportLabel`, `LOG`, `CommonUtil` | Button label, console prefix, small DOM element factory |
 | 41–59 | `Util` | Date formatting (local `YYYY-MM-DD HH:mm`), YAML quoting, filename sanitizing, timeouts, same-origin JSON fetch |
-| 61–316 | `Sites` | **All per-site logic**: `match`, `labels`, `title`/`titleSuffix`, `turns()` → `[{el, role}]` in DOM order, `label(turn)`, `content(el)` (root to convert), `skip` selectors, `hook(el, ctx, md)` for custom elements, optional `preLang(pre)`, `startDate()`, and Gemini's and Claude's `api()` → `{startDate, turns: [{role, label, md}], warning?}` |
-| 318–462 | `SKIP`, `BLOCK_TAGS`, `Md` | Recursive DOM→Markdown walker over the live DOM (read-only): blocks, nested lists, tables, code fences, inline code, links, images, KaTeX, blockquotes. Code is kept behind placeholders so whitespace tidying can't touch it. `shiftHeadings()` does the `###` shift for ready-made (API) Markdown |
-| 464–546 | `Chat` | `collect()` returns `site.api()` turns for non-HTML formats when a site has one; otherwise it looks up the start date and converts each DOM turn. `frontmatter()`, `build(fmt)` per format, `export()` triggers the Blob download and returns any warning |
-| 548–567 | `GM_addStyle(...)` | Styles for the floating button and menu, including dark mode |
-| 569–646 | `init()` | Builds the button and menu, runs the async export with progress shown on the button (a warning or error stays there for 5s), handles dragging, places the menu by screen quadrant. The button is anchored bottom-right (`right`/`bottom` offsets saved with `GM_setValue`) and re-clamped to the viewport on `resize`, so it follows window resizing and zoom |
-| 648–652 | Bootstrap | Installs a pass-through `trustedTypes` default policy; runs `init` after 1s, then every 3s (re-injects after SPA navigation) |
+| 61–315 | `Sites` | **All per-site logic**: `match`, `labels`, `title`/`titleSuffix`, `turns()` → `[{el, role}]` in DOM order, `label(turn)`, `content(el)` (root to convert), `skip` selectors, `hook(el, ctx, md)` for custom elements, optional `preLang(pre)`, `startDate()`, and Gemini's and Claude's `api()` → `{startDate, turns: [{role, label, md}], warnings?}` |
+| 317–461 | `SKIP`, `BLOCK_TAGS`, `Md` | Recursive DOM→Markdown walker over the live DOM (read-only): blocks, nested lists, tables, code fences, inline code, links, images, KaTeX, blockquotes. Code is kept behind placeholders so whitespace tidying can't touch it. `shiftHeadings()` does the `###` shift for ready-made (API) Markdown |
+| 463–559 | `Chat` | `collect()` returns `site.api()` turns for non-HTML formats when a site has one; otherwise it looks up the start date and converts each DOM turn. `frontmatter()`, `build(fmt)` per format, `check()` flags API output that looks like a moved field (see v1.6.0), `export()` triggers the Blob download and returns the warnings |
+| 561–587 | `GM_addStyle(...)` | Styles for the floating button and menu, including dark mode |
+| 589–682 | `init()` | Builds the button and menu, runs the async export with progress shown on the button, shows warnings and errors in a toast next to it, handles dragging, places the menu by screen quadrant. The button is anchored bottom-right (`right`/`bottom` offsets saved with `GM_setValue`) and re-clamped to the viewport on `resize`, so it follows window resizing and zoom |
+| 684–688 | Bootstrap | Installs a pass-through `trustedTypes` default policy; runs `init` after 1s, then every 3s (re-injects after SPA navigation) |
 
 ### Per-site DOM selectors (likely to go stale)
 

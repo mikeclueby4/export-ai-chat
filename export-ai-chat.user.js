@@ -2,7 +2,7 @@
 // @name         Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML
 // @description  Export ChatGPT, Gemini, Grok, Claude conversations to Markdown, JSON, CSV, TXT, HTML
 // @namespace    mikeclueby4/export-ai-chat
-// @version      1.5.1
+// @version      1.6.0
 // @author       mikeclueby4, Kairox
 // @include      *://chatgpt.com/*
 // @include      *://grok.com/*
@@ -185,13 +185,12 @@
                     { role: 'user', label: this.labels.user, md: Md.shiftHeadings(t[2][0][0].trim().replace(/^(.*\S.*)\n([ \t]*(?:-+|=+)[ \t]*)$/gm, '$1\n\n$2')) },
                     { role: 'assistant', label: this.labels.assistant, md: Md.shiftHeadings(this.apiMd(cands[i], i, lastUse)) }
                 ]);
+                const warnings = [];
                 const left = out.flatMap(t => t.md.match(/http:\/\/googleusercontent\.com\/\w+\/\d+/g) || []);
-                if (left.length) console.warn(LOG, 'unresolved Gemini placeholders:', left);
-                return {
-                    startDate: new Date(turns[0][4][0] * 1000),
-                    turns: out,
-                    warning: left.length ? `${left.length} unresolved placeholder(s)` : null
-                };
+                if (left.length) warnings.push(`${left.length} unresolved placeholder(s): ${[...new Set(left.map(u => u.split('/')[3]))].join(', ')}`);
+                const noUrl = cands.flatMap(c => c[2]?.[1] || []).filter(ci => !ci[2]?.some(s => s[0])).length;
+                if (noUrl) warnings.push(`${noUrl} web citation(s) without a URL were dropped`);
+                return { startDate: new Date(turns[0][4][0] * 1000), turns: out, warnings };
             },
             // Response Markdown with ` ([Source: title](url))` after each cited span, and canvas and Deep Research
             // plan placeholders replaced by their content.
@@ -475,8 +474,8 @@
             // Sites with an API get the whole conversation from it; HTML still copies the rendered DOM.
             if (site.api && fmt !== 'html') {
                 progress?.('Loading…');
-                const { startDate, turns, warning } = await site.api();
-                return { ...base, startDate: Util.validDate(startDate), turns, warning };
+                const { startDate, turns, warnings = [] } = await site.api();
+                return { ...base, startDate: Util.validDate(startDate), turns, warnings: [...warnings, ...this.check(turns)] };
             }
 
             const turns = site.turns();
@@ -494,7 +493,7 @@
             return {
                 ...base, startDate,
                 // The page renders only part of a long conversation, so HTML may be incomplete.
-                warning: fmt === 'html' && site.api ? 'HTML: rendered turns only' : null,
+                warnings: fmt === 'html' && site.api ? ['HTML holds only the turns the page has rendered'] : [],
                 turns: turns.map(t => ({
                     role: t.role,
                     label: (site.label?.(t) || site.labels[t.role]).trim().replace(/:$/, ''),
@@ -502,6 +501,20 @@
                     md: fmt === 'html' ? '' : Md.convert(site.content(t.el), site)
                 }))
             };
+        },
+        // Undocumented APIs drift; flag API output that suggests a field moved and content was silently lost.
+        check(turns) {
+            const w = [];
+            const empty = turns.filter(t => !t.md.trim()).map(t => t.role);
+            if (empty.length) w.push(`${empty.length} empty message(s) (${[...new Set(empty)].join(', ')})`);
+            // Code may legitimately contain "[^1]" or "[cite: 1]", so leave it out.
+            const md = turns.map(t => t.md).join('\n').replace(/^(`{3,})[^\n]*\n[\s\S]*?^\1`*$/gm, '').replace(/`[^`\n]*`/g, '');
+            const defs = new Set((md.match(/^\[\^[\d.]+\]:/gm) || []).map(s => s.slice(0, -1)));
+            const missing = new Set((md.match(/\[\^[\d.]+\](?!:)/g) || []).filter(r => !defs.has(r)));
+            if (missing.size) w.push(`${missing.size} footnote(s) without a source`);
+            const cites = (md.match(/\[cite:[^\]]*\]/g) || []).length;
+            if (cites) w.push(`${cites} unconverted [cite] marker(s)`);
+            return w;
         },
         frontmatter(d) {
             const lines = ['---', 'status: report', `title: ${Util.yamlStr('Exported LLM Chat: ' + d.title)}`];
@@ -541,7 +554,7 @@
             const day = Util.fmtDate(d.startDate || d.exportDate).slice(0, 10).replace(/-/g, '');
             a.href = u; a.download = `${day}-${Util.fileName(d.title)}.${fmt}`; document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(u); }, 0);
-            return d.warning;
+            return d.warnings;
         }
     };
 
@@ -563,6 +576,13 @@
         .ai-export-menu-item { display: flex; align-items: center; padding: 12px 14px; background: transparent; border: none; border-radius: 10px; text-align: left; cursor: pointer; color: #333; font-size: 13px; font-weight: 500; transition: 0.15s ease; width: 100%; white-space: nowrap; }
         @media (prefers-color-scheme: dark) { .ai-export-menu-item { color: #eee; } }
         .ai-export-menu-item:hover { background: rgba(16,163,127,0.15); color: #10a37f; }
+        .ai-export-toast { position: fixed; z-index: 2147483647; max-width: 360px; padding: 12px 16px; border-radius: 12px; background: #fff8e1; color: #3e2f00; border-left: 4px solid #f5a623; box-shadow: 0 8px 32px rgba(0,0,0,0.25); font: 13px/1.5 system-ui; cursor: pointer; animation: aiPopUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+        .ai-export-toast.error { background: #fdecea; color: #5f1410; border-left-color: #d93025; }
+        .ai-export-toast b { display: block; margin-bottom: 4px; }
+        @media (prefers-color-scheme: dark) {
+            .ai-export-toast { background: #3a3020; color: #ffe8b0; }
+            .ai-export-toast.error { background: #3d1f1d; color: #ffd2cc; }
+        }
         .ai-export-menu-item.clicked { transform: scale(0.92); background: rgba(16,163,127,0.3); opacity: 0.7; }
     `);
 
@@ -572,7 +592,21 @@
         box.innerHTML = `<div style="display:flex;align-items:center;gap:8px;pointer-events:none;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg><span>${exportLabel}</span></div>`;
         const labelSpan = box.querySelector('span');
         const menu = CommonUtil.createElement("div", { className: "ai-export-menu-panel" });
-        let busy = false;
+        let busy = false, toast = null;
+        // Warnings and errors go in a toast next to the button: warnings fade after 10s, errors stay until clicked.
+        const showToast = (head, lines, error) => {
+            toast = CommonUtil.createElement('div', {
+                className: 'ai-export-toast' + (error ? ' error' : ''),
+                childrens: [CommonUtil.createElement('b', { text: head }), ...lines.map(l => CommonUtil.createElement('div', { text: '• ' + l }))]
+            });
+            const rect = box.getBoundingClientRect(), t = toast;
+            t.style.right = Math.max(8, window.innerWidth - rect.right) + 'px';
+            if (rect.top > window.innerHeight / 2) t.style.bottom = (window.innerHeight - rect.top + 12) + 'px';
+            else t.style.top = (rect.bottom + 12) + 'px';
+            t.onclick = () => t.remove();
+            if (!error) setTimeout(() => t.remove(), 10000);
+            document.body.appendChild(t);
+        };
         ['md', 'json', 'csv', 'txt', 'html'].forEach(ext => {
             const btn = CommonUtil.createElement("button", { className: "ai-export-menu-item", text: `${exportLabel} .${ext.toUpperCase()}` });
             btn.onclick = (e) => {
@@ -583,17 +617,19 @@
                     btn.classList.remove('clicked');
                     menu.style.display = 'none';
                     busy = true;
-                    let note = null;
+                    toast?.remove();
                     try {
-                        note = await Chat.export(ext, msg => { labelSpan.textContent = msg; });
+                        const warnings = await Chat.export(ext, msg => { labelSpan.textContent = msg; });
+                        if (warnings?.length) {
+                            console.warn(LOG, 'export warnings:', warnings);
+                            showToast('Exported, but check:', warnings, false);
+                        }
                     } catch (err) {
                         console.error(LOG, 'export failed:', err);
-                        note = 'Export failed (see console)';
+                        showToast('Export failed:', [err.message, 'Details in the console.'], true);
                     } finally {
                         busy = false;
-                        // A warning or error stays on the button for a few seconds.
-                        labelSpan.textContent = note || exportLabel;
-                        if (note) setTimeout(() => { if (!busy) labelSpan.textContent = exportLabel; }, 5000);
+                        labelSpan.textContent = exportLabel;
                     }
                 }, 200);
             };

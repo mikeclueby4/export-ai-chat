@@ -45,7 +45,9 @@ sorted(people, key=lambda p: p["age"])
 
 ## Claude and Gemini: citations, artifacts, canvases and Deep Research
 
-On Claude and Gemini, the Markdown, JSON, CSV and TXT exports come from the site's own conversation data (the same request the web page makes), not from what is on screen. So you get the whole conversation even when the page has only partly rendered it, and the export holds the original Markdown with real code-block languages and math. If that request fails, the export fails and the button says so. It doesn't fall back to a partial copy of the page.
+On Claude and Gemini, the Markdown, JSON, CSV and TXT exports come from the site's own conversation data (the same request the web page makes), not from what is on screen. So you get the whole conversation even when the page has only partly rendered it, and the export holds the original Markdown with real code-block languages and math. If that request fails, the export fails and a toast next to the button says why. It doesn't fall back to a partial copy of the page.
+
+These sites can change that data without notice. So after each export, the script checks the result for empty messages, footnotes without a source and leftover placeholders. If it finds any, a toast lists them, and you should check the file.
 
 **Claude**
 
@@ -89,7 +91,7 @@ The "sources read" lists in the pane, which Gemini consulted but didn't cite, ar
 
 The HTML export is a quick copy of what the page has rendered. It is not built from the conversation data the other formats use.
 
-- It contains only the turns currently loaded in the page. Claude and Gemini load long chats in pieces, so the button warns **"HTML: rendered turns only"**.
+- It contains only the turns currently loaded in the page. Claude and Gemini load long chats in pieces, so the export shows a warning saying so.
 - It embeds the page's own markup as-is, including the site's styling hooks and icons. Citations stay as the site displays them, so there are no footnotes or source lists, and canvases or artifacts appear only as far as the page shows them.
 - On Gemini with the Deep Research pane open, it copies the rendered report from the pane.
 - The filename date is the export date, because the page doesn't show when the chat started.
