@@ -43,6 +43,8 @@ Do not edit anything in `reference/`. All development happens in the root `expor
 
   Code blocks are excluded from the checks. Verified 2026-11-09: clean exports of the Deep Research and Debian chats show no toast; renaming the `"44"` key gave "58 footnote(s) without a source"; an HTTP 400 gave an error toast.
 
+- v1.5.2: CSV cells starting with `= + - @ tab CR` get a leading `'` (formula injection). The exported HTML carries a `<meta>` CSP (`default-src 'none'; style-src 'unsafe-inline'; img-src data:`), so the saved file runs no script and loads nothing remote. Remote images in it no longer show.
+
 ## Output format (MD)
 
 ```markdown
