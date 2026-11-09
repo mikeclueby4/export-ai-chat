@@ -2,7 +2,7 @@
 // @name         Export ChatGPT/Gemini/Grok/Claude Chat -> MD, JSON, CSV, TXT, HTML
 // @description  Export ChatGPT, Gemini, Grok, Claude conversations to Markdown, JSON, CSV, TXT, HTML
 // @namespace    mikeclueby4/export-ai-chat
-// @version      1.5.1
+// @version      1.5.2
 // @author       mikeclueby4, Kairox
 // @include      *://chatgpt.com/*
 // @include      *://grok.com/*
@@ -518,14 +518,15 @@
                 return { c: JSON.stringify({ ...meta, messages: d.turns.map(t => ({ role: t.role, label: t.label, content: t.md })) }, null, 2), m: 'application/json' };
             }
             if (fmt === 'csv') {
-                const q = s => `"${s.replace(/"/g, '""')}"`;
+                // A leading ' stops spreadsheets from evaluating =, +, -, @ (and tab/CR) cells as formulas.
+                const q = s => `"${s.replace(/^[=+\-@\t\r]/, "'$&").replace(/"/g, '""')}"`;
                 return { c: "role,label,content\n" + d.turns.map(t => [t.role, t.label, t.md].map(q).join(',')).join('\n') + '\n', m: 'text/csv' };
             }
             if (fmt === 'html') {
                 const body = d.turns.map(t => t.role === 'user'
                     ? `<h2>${Util.escHtml(t.label)}</h2><div style="background:#f4f4f5;padding:15px;border-radius:12px;margin:20px 0;">${t.contentEl.innerHTML}</div>`
                     : `<h2>${Util.escHtml(t.label)}</h2><div>${t.contentEl.innerHTML}</div><hr/>`).join('');
-                return { c: `<html><head><meta charset="utf-8"><title>${Util.escHtml(d.title)}</title></head><body style="font-family:sans-serif;max-width:800px;margin:auto;padding:30px;line-height:1.7;"><h1>${Util.escHtml(d.title)}</h1>${body}</body></html>`, m: 'text/html' };
+                return { c: `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"><title>${Util.escHtml(d.title)}</title></head><body style="font-family:sans-serif;max-width:800px;margin:auto;padding:30px;line-height:1.7;"><h1>${Util.escHtml(d.title)}</h1>${body}</body></html>`, m: 'text/html' };
             }
             if (fmt === 'md') {
                 return { c: `${this.frontmatter(d)}\n\n# ${d.title}\n\n` + d.turns.map(t => `## ${t.label}\n\n${t.md}\n`).join('\n'), m: 'text/markdown' };
